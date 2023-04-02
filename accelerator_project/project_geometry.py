@@ -14,7 +14,6 @@ from scipy.spatial.transform import Rotation as R
 from os import getcwd
 from os.path import join
 from math import ceil
-from numba import prange
 from inspect import signature, isfunction
 from functools import partial
 from numpy import sin, cos, log10, multiply, isnan, where
@@ -772,7 +771,7 @@ class Plane(Object):
         ts = divide(intersection_constant, self.temp_ray_prod)
         return ts
 
-    def gen_incident(self):  # Only called after intersection test already made
+    def gen_incident(self, rays):  # Only called after intersection test already made
         prod = abs(self.temp_ray_prod)  # angle calculation only calculates absolute value of angle
         return arcsin(prod)
 
@@ -1309,8 +1308,8 @@ class Tesselation(Composite):
         self.grid_dims = (xyz_array.shape[0]-1, xyz_array.shape[1]-1)
         self.object_subtype = "Tesselation"
         count = 1
-        for i in prange(self.grid_dims[0]):
-            for j in prange(self.grid_dims[1]):
+        for i in range(self.grid_dims[0]):
+            for j in range(self.grid_dims[1]):
                 p1 = self.funct_array[i, j]
                 p2 = self.funct_array[i+1, j]
                 p3 = self.funct_array[i, j+1]
@@ -1512,7 +1511,7 @@ class ObjFile:
 # OBJ CONVERSION TOOLS
 
 def tess_to_OBJ(tess, file_path, **kwargs):
-    if isinstance(tess, Tesselation):
+    if not isinstance(tess, Tesselation):
         raise TypeError("Input needs to be a Tesselation instance.")
     else:
         file = open(file_path, "w")
@@ -1543,7 +1542,7 @@ def tess_to_OBJ(tess, file_path, **kwargs):
 
 
 def implicit_to_OBJ(implicit, sample_width, bounds, file_path, *args, **kwargs):
-    if isinstance(implicit, Implicit):
+    if not isinstance(implicit, Implicit):
         raise TypeError("Input must be an instance of Implicit.")
     else:
         # CREATE ARRAY FROM FUNCTION

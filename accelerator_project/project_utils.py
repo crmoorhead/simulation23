@@ -376,12 +376,8 @@ class Scene():
                 rays = array([(self.rays[:, self.idx_dict[-1][0][c], self.idx_dict[-1][1][c]]) for c in range(len(self.idx_dict[-1][0]))])
                 br_dists = squeeze(self.background.intersection_params(rays, self.pov))   # gets distances of rays that hit the
                 hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
-                print(hits)
-                print(br_dists[hits])
-                print(self.idx_dict[-1])
-                self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[hits])   # gets 2D indices of hits
+                self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[hits].T) # Produces correct format of tuple for indexing
                 self.dists[self.idx_dict[-1]] = br_dists[hits]   # Allocate distance of hits to 2D array of dists
-
             else:
                 # similar to above but indices of components replace object indices
                 pass
@@ -405,7 +401,9 @@ class Scene():
                 print("no")
         print("finished checking objects:", default_timer()-start)
         if self.background is not None:
-            bg_incidents = squeeze(self.background.gen_incident(self.rays, self.idx_dict[-1]))
+            print(array(self.idx_dict[-1]).size/2)
+            print(self.rays.shape)
+            bg_incidents = squeeze(self.background.gen_incident(self.rays[self.idx_dict[-1]]))
             print(bg_incidents)
             SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
         return SL
@@ -643,11 +641,11 @@ class A_scan:
     def intersection_params(self):
         if "plane" in self.__dict__:
             ts = divide(self.constant, self.ray_plane_prod)
-            ts = where((ts < self.min_intersection) | (ts > self.max_intersection), nan, ts)
+            ts = where((ts < self.min_intersection) | (ts > self.max_intersection), NaN, ts)
         else:
             self.scene.intersection_params(self.rays, self.centre)
             ts = self.scene.dists
-            ts = where((ts < self.min_intersection) | (ts > self.max_intersection), nan, ts)
+            ts = where((ts < self.min_intersection) | (ts > self.max_intersection), NaN, ts)
         return ts
 
     ### RAY RETURN FUNCTIONS
@@ -681,7 +679,7 @@ class A_scan:
                 SL = self.test_scatterer.SL(
                     self.angles_with_plane())  # What is this line for? # Is input rays or angles?
         else:
-            SL = self.scene.scatter_loss(self.rays)
+            SL = self.scene.scatter_loss()
         return dists, TL + DL + SL
 
     def gather(self, dist_array, strength_array, *args, **kwargs):
@@ -877,3 +875,36 @@ class Scan():
 # Resolution 100 as default. Threshold at 0.1 as default.
 # Degrees as standard.
 
+# SAMPLING FUNCTIONS
+
+
+
+def scale_sample(funct, x_range, y_range, levels, low=1):
+    if not isinstance(levels, int) or low > levels:
+        raise ValueError("Subdivision levels must be higher than {}.".format(low))
+    sampled_arrays = []
+    for i in range(low, levels+low):
+        sampled_arrays.append(array_from_explicit(funct, x_range, y_range, 2**i))
+    return sampled_arrays
+
+def nested_tesselations(funct, x_range, y_range, levels, low=1, **kwargs):
+    samples = scale_sample(funct, x_range, y_range, levels, low)
+    if "name" in kwargs:
+        stem = kwargs["name"]
+    else:
+        stem = "unnamed_function"
+    tesselations = {}
+    for s in samples:
+        t = Tesselation(s)
+        tesselations[stem+"_{}".format(t.component_count)] = t
+    return tesselations
+
+def nested_sample_to_OBJ(funct, x_range, y_range, levels, low=1, **kwargs):
+    nt = nested_tesselations(funct, x_range, y_range, levels, low, **kwargs)
+    obs = {}
+    if "save_dir" in kwargs:
+        root = kwargs["save_dir"]
+    else:
+        root = getcwd()
+    for t in nt:
+        obs[t] = tess_to_OBJ(nt[t], join(root, t+".obj"))
