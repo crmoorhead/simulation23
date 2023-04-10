@@ -3,7 +3,8 @@
 from numpy import all, array, zeros, minimum, maximum, \
     clip, amin, amax, stack, multiply, ones, concatenate, divide, \
     isclose, ndarray, arctan2, pi, where, arcsin, cross, dot, matmul, \
-    NaN, log10, expand_dims, squeeze, tensordot, full_like, full, asarray
+    NaN, log10, expand_dims, squeeze, tensordot, full_like, full, asarray, \
+    vectorize, split, abs
 from numpy.random import random
 from numpy.linalg import norm
 from itertools import product
@@ -17,6 +18,10 @@ from math import ceil
 from inspect import signature, isfunction
 from functools import partial
 from numpy import sin, cos, log10, multiply, isnan, where
+from copy import copy, deepcopy
+from autograd import grad
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # ROTATION AND SCATTERER CLASSES
 
@@ -149,7 +154,9 @@ class Scatterer:
 
 class Rotation(R):
 
-    def __init__(self, zyx_TB_angles, centre=array([0, 0, 0])): #https://en.wikipedia.org/wiki/Euler_angles#Tait%E2%80%93Bryan_angles
+    # https://en.wikipedia.org/wiki/Euler_angles#Tait%E2%80%93Bryan_angles - Euler angle convention
+
+    def __init__(self, zyx_TB_angles, centre=array([0, 0, 0])):
         self.angles = array(zyx_TB_angles)
         self.rotation = R.from_euler("zyx", array(zyx_TB_angles), degrees=True)
         self.centre = array(centre)
@@ -456,13 +463,7 @@ class Object:
             min_param = 0
 
         if self.intersect(rays, pov):
-            param = vector.value[0] / self.value[0]
-            if param >= min_param:
-                return param
-            else:
-                return []
-        else:
-            return []
+            print("Placeholder function only applied. This object has no explicit intersection parameters method.")
 
     def intersection_point(self, rays, pov, **kwargs):
         intersections = self.intersect_param(rays, pov, **kwargs)
@@ -487,13 +488,13 @@ class Object:
 
     def normal(self, points, *args):
         if isinstance(points, ndarray):
-            return self.gen_normal(point, *args)
-        elif isinstance(point, list):
+            return self.gen_normal(points, *args)
+        elif isinstance(points, list):
             normals = {}
-            for p in point:
+            for p in points:
                 normals[str(p)] = self.gen_normal(p, *args)
             if "filter" in args:
-                normals = {k: v for k, v in normals.items() if v != None}
+                normals = {k: v for k, v in normals.items() if v is not None}
             return normals
         else:
             return None
@@ -626,30 +627,26 @@ class Composite(Object):
 
     def intersection_params(self, rays, pov, *args, **kwargs):
         self.ray_hit_count = 0
-        self.temp_hit = array([])
         if "accelerator" in kwargs:
             pass
         else:
             ob_idxs = full(rays.shape[1:], -1, dtype=float)  # Rays all assigned as not hitting any object
-            dists = full(rays.shape[1:], 128, dtype=float)  # Distances all set to 128 (much higher than
-            idx_dict = {}
+            dists = full(rays.shape[1:], 128, dtype=float)  # Distances all set to 128 (much higher than any possible)
             self.labels = list(self.COMPONENTS.keys())
             objects = list(self.COMPONENTS.values())
             for i in range(self.component_count):
                 dist = objects[i].intersection_params(rays, pov)  # Calc distances until intersection for current object
-                ob_idxs, dists = self.collect_min(ob_idxs, dists, dist,
-                                                  i)  # updates closest distances for each ray and retains object
-
+                ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i)  # updates closest distances for each ray and retains object
+            idx_dict = {}
             for f in range(-1, self.component_count):  # -1 is for no objects being hit for that ray
-                conditions = asarray(where(ob_idxs == f)).T  # Finds indices where rays hit current object
-                if array(conditions).size != 0:  # If there are any hits
-                    idx_dict[f] = conditions
-                    self.ray_hit_count += len(idx_dict[f])
+                conditions = where(ob_idxs == f)  # Finds indices where rays hit current object
+                if conditions[0].size != 0:  # If there are any hits
+                    idx_dict[f] = conditions    # Add to dictionary of hits
+                    self.ray_hit_count += len(idx_dict[f]) # Add to total hit count
                 else:
                     idx_dict[f] = []
 
-            self.ray_hit_count -= len(idx_dict[-1])  # Subtract misses
-            self.comp_idxs = idx_dict
+            self.comp_idxs = idx_dict # Save for later use in gen_incident
             return dists
 
     def collect_min(self, indices, mins, new_array, index):
@@ -692,7 +689,6 @@ class Composite(Object):
             self.add_property("scatterer", new_scat)
             for c in self.COMPONENTS:
                 c.add_property("scatterer", new_scat)
-
 
 # PLANE
 
@@ -763,16 +759,25 @@ class Plane(Object):
     # Expects an input of rays from a given PoV
 
     def perpendicularity(self, rays):  # ray_direction * plane_normal (if 0, then the ray is in the plane)
+        print("perpendicularity shape", rays.shape)
         return dot(rays, expand_dims(self.unit_normal, 0).T)
 
     def intersection_params(self, rays, pov):
-        self.temp_ray_prod = self.perpendicularity(rays)
+        self.temp_ray_prod = self.perpendicularity(rays) # Store data for later use
         intersection_constant = dot(array([0, 0, -self.constant]) - pov, self.unit_normal)
         ts = divide(intersection_constant, self.temp_ray_prod)
+        ts[ts < 0] = NaN
         return ts
 
-    def gen_incident(self, rays):  # Only called after intersection test already made
+# rays input is an array of shape (3, N) using indices from the intersection_params method returned in scanning
+# Filter must be provided to access precomputed entries in self.temp_ray_prod
+    def gen_incident(self, rays, filter=None):  # Only called after intersection test already made
         prod = abs(self.temp_ray_prod)  # angle calculation only calculates absolute value of angle
+        print("temp_ray_prod", prod.shape)
+        if filter is not None:
+            prod = abs(self.temp_ray_prod[filter])
+        else:
+            prod = abs(self.temp_ray_prod)
         return arcsin(prod)
 
         # CHANGE TO ACCEPT ARRAYS
@@ -1089,7 +1094,7 @@ class Triangle(Object):
             return full(rays.shape[1:], NaN)
 
     def intersection_points(self, rays, pov):
-        U, V, _ = interfunction(rays, pov)
+        U, V, _ = self.interfunction(rays, pov)
         if U is not None:
             U = U.reshape((U.shape[0], 1))
             V = V.reshape(U.shape)
@@ -1132,10 +1137,41 @@ class Triangle(Object):
                     else:
                         return array([0, 0, 1])
 
+# TETRAHEDRON
+class Tetrahedron(Composite):
+
+    def __init__(self, p1, p2, p3, p4):
+        super().__init__()
+        self.object_subtype = "Tetrahedron"
+        [self.p1, self.p2, self.p3, self.p4] = [array(i, dtype=float) for i in sorted([list(p) for p in [p1,p2,p3,p4]])]
+        self.u = self.p2-self.p1
+        self.v = self.p3-self.p1
+        self.w = self.p4-self.p1
+        self.anchor = (self.p1 + self.p2 + self.p3 + self.p4)/4
+        self.PARAMS={"anchor": self.anchor, "vec_1": self.u, "vec_2": self.v, "vec_3": self.w}
+        self.COMPONENTS={"T1":Triangle(p1,p2,p3),"T2":Triangle(p1,p3,p4),"T3":Triangle(p1,p2,p4),"T4":Triangle(p2,p3,p4)}
+        mins = [min([self.p1[i], self.p2[i], self.p3[i], self.p4[i]]) for i in range(3)]
+        maxes = [max([self.p1[i], self.p2[i], self.p3[i], self.p4[i]]) for i in range(3)]
+        self.bounding_box=AABB(mins,maxes)
+        self.component_count = len(self.COMPONENTS)
+
+    def __str__(self):
+        return "Tetrahedron(p_1:{}, p_2:{}, p_3:{}, p_4:{})".format(self.p1, self.p2, self.p3, self.p4)
+
+    def apply_rotation(self, rotation):
+        if not isinstance(rotation, Rotation):
+            raise TypeError("Rotation must be an instance of Rotation object.")
+        self.p1 = rotation.apply(self.p1)
+        self.p2 = rotation.apply(self.p2)
+        self.p3 = rotation.apply(self.p3)
+        self.p4 = rotation.apply(self.p4)
+        self.__init__(self.p1, self.p2, self.p3, self.p4)
+
+
 class Implicit():
 
     def __init__(self, funct, formula):
-        if not (isfunction(funct) or isbuiltin(funct) or funct.__class__ is partial(print).__class__):
+        if not (isfunction(funct) or isinstance(funct, partial)):
             raise TypeError("Implicit function input must be a function object")
         self.function = funct
         self.formula = formula
@@ -1190,7 +1226,7 @@ class Implicit():
 
     def shift(self, v):
         def shifted(p):
-            return self.function(p-vector)
+            return self.function(p-v)
         formula = self.formula.replace("x","(x-{})".format(v[0]))
         formula = formula.replace("y", "(y-{})".format(v[1]))
         formula = formula.replace("z", "(z-{})".format(v[1]))
@@ -1225,9 +1261,9 @@ class Surface(Object):
 
         self.bounding_box = AABB([self.x_max, self.y_max, self.z_max], [self.x_min, self.y_min, self.z_min])
         self.function = implicit.function
-        self.implicit = implicit_funct
+        self.implicit = implicit
         self.convergence_constant = 0.0001
-        self.name = implicit_funct.formula
+        self.name =  implicit.formula
         self.norm_funct = vectorize(self.normal_funct(*args)) # Does this vectorise help?
 
     def __str__(self):
@@ -1248,16 +1284,15 @@ class Surface(Object):
 
     def new_function(self, x, y, z, *args, **kwargs):
         def new(x, y, z):
-            v = hstack
+            pass
 
-    def intersection_params(self, rays, centre, *args, **kwargs):
-        def create_loss_funct(rays, centre, *args, **kwargs):
-            dir_x, dir_y, dir_z = array(rays), array(ray.direction.y), array(ray.direction.z)
-            orig_x, orig_y, orig_z = ray.origin.x, ray.origin.y, ray.origin.z
+    def intersection_params(self, rays, pov, *args, **kwargs):
+        def create_loss_funct(rays, pov, *args, **kwargs):
+            [dir_x, dir_y, dir_z] = split(rays, rays.shape[0], axis=0)
             def loss_func(t, *args, **kwargs):
-                return abs(implicit(dir_x * t + orig_x, dir_y * t + orig_y, dir_z * t + orig_z, *args, **kwargs))
+                return abs(self.function(dir_x * t + pov[0], dir_y * t + pov[1], dir_z * t + pov[2], *args, **kwargs))
             return loss_func
-        loss_funct = create_loss_funct(self.function,ray)
+        loss_funct = create_loss_funct(self.function, rays)
         param = minimize(loss_funct, x0=0, method='Nelder-Mead', tol=self.convergence_constant)
         return param
 
@@ -1290,8 +1325,8 @@ class Surface(Object):
             gradient = self.normal_funct(*args)     # Need to apply the gradient to an array of shape (n,m,3)
             n, m = points.shape[:2]
             normals = zeros(points.shape)
-            for i in prange(n):
-                for j in prange(m):
+            for i in range(n):
+                for j in range(m):
                     normals[i, j, :] = array([d(points[i, j, 0], points[i, j, 1], points[i, j, 2]) for d in gradient])
             return normals
         else:
@@ -1508,6 +1543,36 @@ class ObjFile:
             raise TypeError("Rotation must be an instance or Rotation class.")
         self.vertices = list(rotation.apply(array(self.vertices)))
 
+# ARRAY EXTRACTION TOOLS
+
+def array_from_explicit(funct, x_range, y_range, n, **kwargs):
+    grid_width = (x_range[1]-x_range[0])/n
+    if "m" in kwargs:
+        m = kwargs["m"]
+        grid_height = (y_range[1]-y_range[0])/kwargs["m"]
+    else:
+        m = ceil((y_range[1]-y_range[0])/grid_width)
+        y_range = (y_range[0], y_range[0]+grid_width*m)
+        grid_height = grid_width
+    points = zeros((n+1, m+1, 3))+[x_range[0], y_range[0], 0]
+    for i in range(n+1):
+        for j in range(m+1):
+            points[i, j] += [i*grid_width, j*grid_height, funct(x_range[0]+i*grid_width, y_range[0]+j*grid_height)]
+    return points
+
+def array_from_implicit(implicit, sample_width, bounds):
+    if not isinstance(implicit, Implicit):
+        raise TypeError("Input must be an instance of Implicit.")
+    # Create sample
+    [n, m, k] = [int((bounds[i][1]-bounds[i][0])//sample_width) for i in range(3)]
+    [x_range, y_range, z_range] = [[bounds[i][0], bounds[i][0]+([n, m, k][i]+1)*sample_width] for i in range(3)]
+    sample_array = zeros((n+1, m+1, k+1))
+    for i in range(n+1):
+        for j in range(m+1):
+            for l in range(k+1):
+                sample_array[i, j, l] = implicit.function(x_range[0]+sample_width*i, y_range[0]+sample_width*j, z_range[0]+sample_width*l)
+    return sample_array
+
 # OBJ CONVERSION TOOLS
 
 def tess_to_OBJ(tess, file_path, **kwargs):
@@ -1591,26 +1656,6 @@ def implicit_to_OBJ(implicit, sample_width, bounds, file_path, *args, **kwargs):
         f.close()
     implicit_obj = ObjFile(file_path)
 
-    # SHOW PLOT
-    if "show" in args:
-        fig = plt.figure(figsize=(10, 10))
-        ax = fig.add_subplot(111, projection='3d')
-
-        mesh = Poly3DCollection(verts[faces])
-        mesh.set_edgecolor('k')
-        ax.add_collection3d(mesh)
-
-        xyz_centre = [(bounds[i][1]+bounds[i][0])/2 for i in range(3)]
-        xyz_spans = [1.1*(bounds[i][1]-bounds[i][0])/2 for i in range(3)]
-        cube_width = max(xyz_spans)
-
-        ax.set_xlim(xyz_centre[0]-cube_width, xyz_centre[0]+cube_width)
-        ax.set_ylim(xyz_centre[0]-cube_width, xyz_centre[0]-cube_width)
-        ax.set_zlim(xyz_centre[0]-cube_width, xyz_centre[0]-cube_width)
-
-        plt.tight_layout()
-        plt.show()
-
     return implicit_obj
 
 def funct_to_OBJ(funct, ftype, path, sample_width, bounds, *args, **kwargs):
@@ -1686,7 +1731,7 @@ class Mesh(Composite):
             self.OBJ = implicit_to_OBJ(obj, kwargs["sample_width"], kwargs["bounds"], path, *args, **kwargs)
         elif isinstance(obj, ObjFile):
             self.OBJ = obj
-        elif (isfunction(obj) or isbuiltin(obj) or obj.__class__ is partial(print).__class__):
+        elif isfunction(obj) or isinstance(obj, partial):
             if "sample_width" not in kwargs:
                 raise ValueError("Keyword argument 'grid_size' must be supplied.")
             if "bounds" not in kwargs:

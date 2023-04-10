@@ -17,7 +17,7 @@ from cv2 import imshow, waitKey, destroyAllWindows
 from scipy.spatial.transform import Rotation as R
 
 # IMPORTS (Scene)
-from new_geometry_tools import *
+from project_geometry import *
 from numpy import concatenate, full_like, isnan, asarray
 from timeit import default_timer
 
@@ -375,36 +375,38 @@ class Scene():
             if not isinstance(self.background, Composite):
                 rays = array([(self.rays[:, self.idx_dict[-1][0][c], self.idx_dict[-1][1][c]]) for c in range(len(self.idx_dict[-1][0]))])
                 br_dists = squeeze(self.background.intersection_params(rays, self.pov))   # gets distances of rays that hit the
-                hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
-                self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[hits].T) # Produces correct format of tuple for indexing
-                self.dists[self.idx_dict[-1]] = br_dists[hits]   # Allocate distance of hits to 2D array of dists
+                print("original background shape", br_dists.shape)
+                self.bg_hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
+                print("hits shape", self.bg_hits.shape)
+                self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[self.bg_hits].T) # Produces correct format of tuple for indexing
+                print("processed shape",self.idx_dict[-1][0].shape)
+                self.dists[self.idx_dict[-1]] = br_dists[self.bg_hits]   # Allocate distance of hits to 2D array of dists
             else:
                 # similar to above but indices of components replace object indices
                 pass
 
     # Map SL results onto shape
     # Maybe input is indices
-    def scatter_loss(self):
+    def scatter_loss(self, **kwargs):
         SL = full(self.rays.shape[1:], NaN)  # generate expected shape
-        print("start checking objects")
+        print("start checking objects\n SCATTER LOSS")
         print("input_rays", self.rays.shape)
         start = default_timer()
         for o in range(self.object_count):
             if self.idx_dict[o] is not None:
                 print("Calculating incidents for", self.labels[o])
-                if issubclass(self.objects[o], Composite): # If it's a composite, the incidents must be calculated for subparts this will use cached component indices
-                    incidents = self.objects[o].gen_incident(self.rays) # No index feed needed as this will be stored internally
-                else:
-                    incidents = self.objects[o].gen_incident(self.rays)
+                incidents = self.objects[o].gen_incident(self.rays[:, self.idx_dict[o][0], self.idx_dict[o][1]])
+                print("incidents", incidents)
+                print("incidents", incidents.shape)
+                print(self.objects[o].scatterer.__str__())
                 SL[self.idx_dict[o]] = self.objects[o].scatterer.SL(incidents)  # Input should be incident angles. Composites should have single scatterer object
             else:
                 print("no")
         print("finished checking objects:", default_timer()-start)
         if self.background is not None:
-            print(array(self.idx_dict[-1]).size/2)
-            print(self.rays.shape)
-            bg_incidents = squeeze(self.background.gen_incident(self.rays[self.idx_dict[-1]]))
-            print(bg_incidents)
+            print("hits shape", self.idx_dict[-1][0].shape) # Hits not the same shape as bg_incidents
+            bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]], filter=self.bg_hits))
+            print("bg_incidents", bg_incidents.shape)
             SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
         return SL
 

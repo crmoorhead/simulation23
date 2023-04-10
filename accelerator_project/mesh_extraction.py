@@ -6,33 +6,9 @@ from os.path import join
 
 # ARRAY EXTRACTION
 
-def array_from_explicit(funct, x_range, y_range, n, **kwargs):
-    grid_width = (x_range[1]-x_range[0])/n
-    if "m" in kwargs:
-        m = kwargs["m"]
-        grid_height = (y_range[1]-y_range[0])/kwargs["m"]
-    else:
-        m = ceil((y_range[1]-y_range[0])/grid_width)
-        y_range = (y_range[0], y_range[0]+grid_width*m)
-        grid_height = grid_width
-    points = zeros((n+1, m+1, 3))+[x_range[0], y_range[0], 0]
-    for i in range(n+1):
-        for j in range(m+1):
-            points[i, j] += [i*grid_width, j*grid_height, funct(x_range[0]+i*grid_width, y_range[0]+j*grid_height)]
-    return points
-
-def array_from_implicit(implicit, sample_width, bounds):
-    if not isinstance(implicit, Implicit):
-        raise TypeError("Input must be an instance of Implicit.")
-    # Create sample
-    [n, m, k] = [int((bounds[i][1]-bounds[i][0])//sample_width) for i in range(3)]
-    [x_range, y_range, z_range] = [[bounds[i][0], bounds[i][0]+([n, m, k][i]+1)*sample_width] for i in range(3)]
-    sample_array = zeros((n+1, m+1, k+1))
-    for i in range(n+1):
-        for j in range(m+1):
-            for l in range(k+1):
-                sample_array[i, j, l] = implicit.function(x_range[0]+sample_width*i, y_range[0]+sample_width*j, z_range[0]+sample_width*l)
-    return sample_array
+# array_from_implicit and array_from_explicit are used to extract arrays from functions. array from explicit is used to
+# extract a height map from a function, f(x,y). array_from_implicit is used to extract sampled values from an implicit
+# function, f(x,y,z). The functions are used to create a Tesselation object, which is then used to create an OBJ file.
 
 # HEIGHT MAP EXTRACTIONS
 
@@ -49,17 +25,17 @@ def gaussian_hole(x, y, a=4, sigma=3.5, centre=(0, 10)):
     return -gaussian_hill(x, y, a, sigma, centre)
 
 def rolling_bank(x, y, a=3, sigma=2.5, dist=10):
-    return a*exp(-((x-centre[0])**2+(y-centre[1])**2)/sigma**2)
+    return a*exp(-((y-dist)**2)/sigma**2)
 
-def trough(x, y):
-    return 0
+def trough(x, y, depth=-1, x_grad=0.3, y_grad=0.1, surf_level=0):
+    return max(abs(x_grad*x-depth),surf_level) + y*y_grad
 
 def valley(x, y):
     return 0
 
 # EDIT AS NEEDED
 level = 4
-funct = gaussian_hill
+funct = trough
 save_dir = getcwd()
 subdivisions = "random"
 
@@ -117,7 +93,7 @@ hierarchy_levels = 4
 low = 2
 
 # MAIN CODE
-# nested_sample_to_OBJ(funct, [-10, 10], [0, 20], levels=hierarchy_levels, low=low, save_dir=save_dir)
+nested_sample_to_OBJ(funct, [-10, 10], [0, 20], levels=hierarchy_levels, low=low, save_dir=save_dir)
 
 # IMPLICIT SURFACE EXTRACTION
 
@@ -203,7 +179,7 @@ Note that these shapes are not necessarily best represented as a mesh, but they 
 def f(x, y, z):
     return 0
 
-def sphere(x, y, z, r=2, centre=[0,1,0]):
+def sphere(x, y, z, r=2, centre=[0,10,3]):
     return (x-centre[0])**2 + (y-centre[1])**2 + (z-centre[2])**2 -r**2
 
 def ellipsoid(x, y, z, a=1, b=2, c=3, centre=[0,0,0]):
@@ -212,20 +188,22 @@ def ellipsoid(x, y, z, a=1, b=2, c=3, centre=[0,0,0]):
 def torus(x, y, z):
     return
 
-def smoothed_cube(x, y, z):
-    return
+def smoothed_cube(x, y, z, r=2, centre=[0,1,0]):
+    return (x-centre[0])**8 + (y-centre[1])**8 + (z-centre[2])**8 -r**8
 
-def pipe(x, y, z):
+def pipe(x, y, z, r=1, centre=10, slope=0):
     return
 
 # EDIT AS NEEDED
 sample_width = 0.2
-im_funct = ellipsoid
+im_funct = smoothed_cube
+scope = 10
 
 # DERIVED AND FIXED VARIABLES
+bounds = [[-scope, scope] for i in range(3)]
 implicit = Implicit(im_funct, "(x-x_c)^2+(y-y_c)^2+(z-z_c)^2-r^2")
 imp_file_name = im_funct.__name__ +"_"+str(sample_width)+".obj"
-implicit_to_OBJ(implicit, sample_width, [[-10, 10], [-10, 10], [-10, 10]], join(save_dir, imp_file_name))
+implicit_to_OBJ(implicit, sample_width, bounds, join(save_dir, imp_file_name))
 
 
 # SCALED SAMPLING
@@ -234,7 +212,7 @@ def scaled_implicit_extract(im_funct, sample_widths=[0.1, 0.2, 0.3, 0.4, 0.5]):
     for s in sample_widths:
         implicit = Implicit(im_funct, "(x-x_c)^2+(y-y_c)^2+(z-z_c)^2-r^2")
         imp_file_name = im_funct.__name__ + "_" + str(s) + ".obj"
-        implicit_to_OBJ(implicit, s, [[-10, 10], [-10, 10], [-10, 10]], join(save_dir, imp_file_name))
+        implicit_to_OBJ(implicit, s, bounds, join(save_dir, imp_file_name))
 
 scaled_implicit_extract(ellipsoid)
 

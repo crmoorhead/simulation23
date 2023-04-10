@@ -4,11 +4,11 @@ from argparse import ArgumentParser
 
 medium = SALT_WATER_1200
 device = SV1010_1200Hz
-scene_1 = Scene(background=FLAT_PLANE)
-scan = Scan(A_scan(device, [0, 0, 0], -60, 0, 200, 0.1, "degs", scene=scene_1)
+test_tet = Tetrahedron([0, 0, 0], [0, 0, 1], [0, 1, 0], [1, 0, 0])
+scene_1 = Scene(background=FLAT_PLANE, objects=test_tet)
+scan = Scan(A_scan(device, [0, 0, 0], -60, 0, 100, 0.1, "degs", scene=scene_1)
             , "scan", "degs", span=120)
-print(scan)
-scan.full_scan("show")
+scan.full_scan("show", verbosity=2)
 
 if __name__ == "__main__":
     parser = ArgumentParser()
