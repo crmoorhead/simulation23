@@ -20,6 +20,7 @@ from scipy.spatial.transform import Rotation as R
 from project_geometry import *
 from numpy import concatenate, full_like, isnan, asarray
 from timeit import default_timer
+import datetime
 
 # SPEED OF SOUND
 
@@ -60,7 +61,7 @@ class SonarDevice():
         self.wavelength = self.sos/freq/1000
 
     def beam_widths(self, threshold=0.5, *args):
-        direction = array([0,0.001],dtype=float)
+        direction = array([0, 0.001], dtype=float)
         while self.directivity(direction) > threshold:
             direction += array([0, 0.001])
         vert = direction[1]
@@ -353,6 +354,7 @@ class Scene():
         ob_idxs = full(self.rays.shape[1:], -1)  # Rays all assigned as not hitting any object
         dists = full(self.rays.shape[1:], 128, dtype=float)  # Distances all set to 128 (much higher than range)
         for i in range(self.object_count):
+            print("Calculating intersections for object " + str(i+1) + "/" + str(self.object_count) + " (" + self.labels[i] + ")")
             dist = self.objects[i].intersection_params(rays, pov)  # Calc distances until intersection for current object
             ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i)  # updates closest distances for each ray and retains object
         idx_dict = {}
@@ -374,13 +376,14 @@ class Scene():
         if self.background is not None:
             if not isinstance(self.background, Composite):
                 rays = array([(self.rays[:, self.idx_dict[-1][0][c], self.idx_dict[-1][1][c]]) for c in range(len(self.idx_dict[-1][0]))])
-                br_dists = squeeze(self.background.intersection_params(rays, self.pov))   # gets distances of rays that hit the
-                print("original background shape", br_dists.shape)
-                self.bg_hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
-                print("hits shape", self.bg_hits.shape)
-                self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[self.bg_hits].T) # Produces correct format of tuple for indexing
-                print("processed shape",self.idx_dict[-1][0].shape)
-                self.dists[self.idx_dict[-1]] = br_dists[self.bg_hits]   # Allocate distance of hits to 2D array of dists
+                if rays.size != 0:
+                    br_dists = squeeze(self.background.intersection_params(rays, self.pov))   # gets distances of rays that hit the B/G
+                    self.bg_hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
+                    # NONE HIT??
+                    self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[self.bg_hits].T) # Produces correct format of tuple for indexing
+                    self.dists[self.idx_dict[-1]] = br_dists[self.bg_hits]   # Allocate distance of hits to 2D array of dists
+                else:
+                    self.idx_dict[-1] = (array([]), array([]))
             else:
                 # similar to above but indices of components replace object indices
                 pass
@@ -390,24 +393,22 @@ class Scene():
     def scatter_loss(self, **kwargs):
         SL = full(self.rays.shape[1:], NaN)  # generate expected shape
         print("start checking objects\n SCATTER LOSS")
-        print("input_rays", self.rays.shape)
         start = default_timer()
         for o in range(self.object_count):
             if self.idx_dict[o] is not None:
                 print("Calculating incidents for", self.labels[o])
                 incidents = self.objects[o].gen_incident(self.rays[:, self.idx_dict[o][0], self.idx_dict[o][1]])
-                print("incidents", incidents)
-                print("incidents", incidents.shape)
-                print(self.objects[o].scatterer.__str__())
-                SL[self.idx_dict[o]] = self.objects[o].scatterer.SL(incidents)  # Input should be incident angles. Composites should have single scatterer object
+                SL[self.idx_dict[o]] = self.objects[o].scatterer.SL(incidents)  # Input should be incident angles.
             else:
                 print("no")
         print("finished checking objects:", default_timer()-start)
         if self.background is not None:
-            print("hits shape", self.idx_dict[-1][0].shape) # Hits not the same shape as bg_incidents
-            bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]], filter=self.bg_hits))
-            print("bg_incidents", bg_incidents.shape)
-            SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
+            if len(self.idx_dict[-1][0]):
+                print("Calculating incidents for background")
+                print("hits shape", self.idx_dict[-1][0].shape) # Hits not the same shape as bg_incidents
+                bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]], filter=self.bg_hits))
+                print("bg_incidents", bg_incidents.shape)
+                SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
         return SL
 
     # Methods for altering Scene properties
@@ -480,10 +481,10 @@ class A_scan:
             self.strength_threshold = 0.1
         else:
             self.strength_threshold = threshold
+        # calculate beam widths at threshold
         self.horiz_span, self.vert_span = self.device.beam_widths(threshold=self.strength_threshold)
-        self.beam_widths = self.device.beam_widths()
 
-        if "degs" in args:
+        if "degs" in args:  # If angles are in degrees, convert to radians
             self.direction_angle = direction * pi / 180
             self.declination = declination * pi / 180
         else:
@@ -656,7 +657,7 @@ class A_scan:
     # Plane vec: [a, b, c] except when flat when it is [0, 0, c]
 
     def directivity_filter(self, *args, **kwargs):
-        theta_range, phi_range = self.beam_widths
+        theta_range, phi_range = self.horiz_span, self.vert_span
         thetas = linspace(-theta_range / 2, theta_range / 2, self.theta_divs)
         phis = linspace(-phi_range / 2, phi_range / 2, self.phi_divs)
         rel_angles = stack(meshgrid(thetas, phis, indexing="xy"))
@@ -685,23 +686,13 @@ class A_scan:
         return dists, TL + DL + SL
 
     def gather(self, dist_array, strength_array, *args, **kwargs):
-        if "scaled" in args:
-            max_dist, min_dist = nanmax(dist_array), nanmin(dist_array)
-            if max_dist < self.min_intersection:
-                raise ValueError("Intersections faulty or too close.")
-            intervals = (max_dist - min_dist) / self.radial_resolution
-        else:
-            intervals = self.max_intersection / self.radial_resolution
-            min_dist = 0
+        intervals = self.max_intersection / self.radial_resolution
         dist_array = dist_array.flatten()
         strength_array = strength_array.flatten()
         valid = argwhere(~isnan(dist_array))
         dist_array = dist_array[valid]
         strength_array = squeeze(strength_array[valid])
-        if min_dist == 0:
-            bin_idxs = squeeze(array(floor_divide(dist_array, intervals), dtype=int))
-        else:
-            bin_idxs = squeeze(array(floor_divide(dist_array - min_dist, intervals), dtype=int))
+        bin_idxs = squeeze(array(floor_divide(dist_array, intervals), dtype=int))
         bins = bincount(bin_idxs, weights=strength_array, minlength=self.radial_resolution)
         return bins
 
@@ -866,10 +857,11 @@ class Scan():
             waitKey(0)
             destroyAllWindows()
         if "save_dir" in kwargs:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             if "image_name" in kwargs:
-                img_name = kwargs["image_name"]
+                img_name = kwargs["image_name"]+"_"+timestamp+".png"
             else:
-                img_name = "scan_image.png"
+                img_name = "scan_image_" + timestamp + ".png"
             imwrite(join(kwargs["save_dir"], img_name), self.image)
 
 

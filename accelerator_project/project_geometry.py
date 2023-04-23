@@ -4,7 +4,7 @@ from numpy import all, array, zeros, minimum, maximum, \
     clip, amin, amax, stack, multiply, ones, concatenate, divide, \
     isclose, ndarray, arctan2, pi, where, arcsin, cross, dot, matmul, \
     NaN, log10, expand_dims, squeeze, tensordot, full_like, full, asarray, \
-    vectorize, split, abs
+    vectorize, split, abs, empty
 from numpy.random import random
 from numpy.linalg import norm
 from itertools import product
@@ -22,6 +22,7 @@ from copy import copy, deepcopy
 from autograd import grad
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+# from memory_profiler import memory_usage, profile
 
 # ROTATION AND SCATTERER CLASSES
 
@@ -554,8 +555,8 @@ class Composite(Object):
         else:
             self.accelerator = None
         # Placeholders for ray intersection memory
-        self.rays = None
-        self.comp_idxs = None
+        self.ray_hit_count = 0
+        self.hit_components = set({})
         if "rotation" in kwargs:
             self.rotation = Rotation(kwargs["rotation"], self.anchor)
         else:
@@ -627,26 +628,27 @@ class Composite(Object):
 
     def intersection_params(self, rays, pov, *args, **kwargs):
         self.ray_hit_count = 0
+        self.hit_components=set({})
         if "accelerator" in kwargs:
             pass
         else:
-            ob_idxs = full(rays.shape[1:], -1, dtype=float)  # Rays all assigned as not hitting any object
+            ob_idxs = empty(rays.shape[1:], dtype=float)  # Rays all assigned as not hitting any component
             dists = full(rays.shape[1:], 128, dtype=float)  # Distances all set to 128 (much higher than any possible)
             self.labels = list(self.COMPONENTS.keys())
             objects = list(self.COMPONENTS.values())
             for i in range(self.component_count):
                 dist = objects[i].intersection_params(rays, pov)  # Calc distances until intersection for current object
-                ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i)  # updates closest distances for each ray and retains object
-            idx_dict = {}
-            for f in range(-1, self.component_count):  # -1 is for no objects being hit for that ray
+                ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i+1)  # updates closest distances for each ray and
+                # retains object. Idx counts from 1, not 0.
+            comp_idxs = {} # Dictionary of indices of rays hitting each component
+            for f in range(1, self.component_count+1):  # f=0 is triggered by the empty array, so we count from 1
                 conditions = where(ob_idxs == f)  # Finds indices where rays hit current object
                 if conditions[0].size != 0:  # If there are any hits
-                    idx_dict[f] = conditions    # Add to dictionary of hits
-                    self.ray_hit_count += len(idx_dict[f]) # Add to total hit count
-                else:
-                    idx_dict[f] = []
-
-            self.comp_idxs = idx_dict # Save for later use in gen_incident
+                    comp_idxs[f] = conditions    # Add to dictionary of hits
+                    self.ray_hit_count += len(comp_idxs[f][0]) # Add to total hit count
+                    self.hit_components.add(self.labels[f-1]) # Add to set of components hit
+                    # Store hits in component object as (3, N) array where N is the number of rays hitting the component
+                    self.COMPONENTS[self.labels[f-1]].temp_hits = rays[:, comp_idxs[f][0],comp_idxs[f][1]]
             return dists
 
     def collect_min(self, indices, mins, new_array, index):
@@ -656,16 +658,19 @@ class Composite(Object):
 
     # composite objects need to reference object too. Save during intersect_params stage
     def gen_incident(self, rays):
-        incidents = full(self.ray_hit_count, NaN)
-        print("ray_hit_count", self.ray_hit_count)
+        # Rays being passed are no longer the full set of rays, but only those that have hit the object in a 2D array
+        # Which rays pertain to which component is stored in self.comp_idxs
+        # create empty array to hold incident angles
+        incidents = empty(self.ray_hit_count, dtype=float)
+        print(incidents.shape)
         current_idx = 0
-        for c in range(self.component_count):
-            print(self.labels[c])
-            comp_rays = [rays[:, self.comp_idxs[c][i][0], self.comp_idxs[c][i][1]] for i in
-                         range(len(self.comp_idxs[c]))]
-            incidents[current_idx:current_idx + len(self.comp_idxs[c])] = self.COMPONENTS[self.labels[c]].gen_incident(
-                comp_rays)  # Need to allocate incidents to array
-            current_idx += len(self.comp_idxs[c])
+        # Incidents are processed linearly through the components, so we need to allocate them to the correct
+        # position in the array
+        for c in self.hit_components:   # For each component that has been hit
+            print(c, "hit_num" , len(self.COMPONENTS[c].temp_hits[0]))
+            incidents[current_idx:current_idx + len(self.COMPONENTS[c].temp_hits[0])] = \
+                self.COMPONENTS[c].gen_incident(self.COMPONENTS[c].temp_hits)  # Need to allocate incidents to correct position in array
+            current_idx += len(self.COMPONENTS[c].temp_hits)  # Increment current_idx by number of hits in component
         return incidents
 
     # Misc methods
@@ -759,7 +764,6 @@ class Plane(Object):
     # Expects an input of rays from a given PoV
 
     def perpendicularity(self, rays):  # ray_direction * plane_normal (if 0, then the ray is in the plane)
-        print("perpendicularity shape", rays.shape)
         return dot(rays, expand_dims(self.unit_normal, 0).T)
 
     def intersection_params(self, rays, pov):
@@ -773,7 +777,6 @@ class Plane(Object):
 # Filter must be provided to access precomputed entries in self.temp_ray_prod
     def gen_incident(self, rays, filter=None):  # Only called after intersection test already made
         prod = abs(self.temp_ray_prod)  # angle calculation only calculates absolute value of angle
-        print("temp_ray_prod", prod.shape)
         if filter is not None:
             prod = abs(self.temp_ray_prod[filter])
         else:
@@ -1002,7 +1005,7 @@ class Triangle(Object):
         self.p1 += array(other)
         self.p2 += array(other)
         self.p3 += array(other)
-        self.anchor = self.p1
+        self.anchor += array(other)
         self.PARAMS["anchor"] = self.anchor
         return self
 
@@ -1012,7 +1015,7 @@ class Triangle(Object):
         self.p1 = rotation.apply(self.p1)
         self.p2 = rotation.apply(self.p2)
         self.p3 = rotation.apply(self.p3)
-        self.__init__(self.p1, self.p2, self.p3)
+        self.__init__(self.p1, self.p2, self.p3) # Reinitializes the object and recalculates derived parameters.
 
     # Intersection methods
     def ison(self, point):
@@ -1056,24 +1059,27 @@ class Triangle(Object):
         plane = self.plane_from_points()
         print(plane)
 
+    # Moeller-Trumbore algorithm returning the distance to the intersection point. Returned array matches 2D
+    # array of rays. If no intersection, NaN is returned in that position.
+
     def interfunction(self, rays, pov):
-        rshape = rays.shape[1:]
-        rays = rays.reshape((3, rays.shape[1] * rays.shape[2])).T
-        epsilon = 10 ** -6
-        T = pov - self.anchor
-        P = cross(rays, self.v.reshape((1, 3)))
-        S = dot(P, self.u) + epsilon
-        U = dot(P, T)
-        U /= S
-        if True in (U >= 0) & (U <= 1):
-            Q = cross(T, self.u)
-            V = where((U >= 0) & (U <= 1), dot(Q, rays.transpose()), NaN) / S
-            t = where((V >= 0) & (V <= 1) & (U + V <= 1), dot(Q, self.v), NaN) / S
-            t = where(t <= 0, NaN, t)
+        rshape = rays.shape[1:] # Shape of the 2D array of rays
+        rays = rays.reshape((3, rays.shape[1] * rays.shape[2])).T # Reshapes into a 2D array of vectors.
+        epsilon = 1e-6
+        T = pov - self.p1 # Vector from p1 to pov (tvec)
+        P = cross(rays, self.v.reshape((1, 3)))  # Cross product of ray and v (pvec)
+        S = dot(P, self.u) # Dot product of pvec and u (determinant).
+        inv_det = where(abs(S)>epsilon, 1 / S, NaN) # Inverse determinant
+        U = multiply(dot(P, T), inv_det)  # Barycentric coordinate u
+        # try to whittle down the number of calculations
+        if True in (U >= 0) & (U <= 1): # If u is in the triangle, calculate v and t.
+            Q = cross(T, self.u) # Cross product of tvec and edge, u. This is constant.
+            V = where((U >= 0) & (U <= 1), dot(Q, rays.transpose()), NaN) * inv_det # Barycentric coordinate v
+            t = where(((V >= 0) & (U + V <= 1)), dot(Q, self.v), NaN) * inv_det # Distance to intersection point
+            t = where(t <= 0, NaN, t) # If t is negative, the intersection point is behind the pov.
             V = V.reshape(rshape)
             U = U.reshape(rshape)
             t = t.reshape(rshape)
-            self.temp_hits = array(where(~isnan(t))).T
             return U, V, t
         else:
             return None, None, None
@@ -1087,11 +1093,11 @@ class Triangle(Object):
             return full(rays.shape[0], False)
 
     def intersection_params(self, rays, pov):
-        _, _, t = self.interfunction(rays, pov)
+        _, _, t = self.interfunction(rays, pov) # Returns the distance to the intersection point.
         if t is not None:
             return t
         else:
-            return full(rays.shape[1:], NaN)
+            return full(rays.shape[1:], NaN) # Returns an array of NaNs if no intersection.
 
     def intersection_points(self, rays, pov):
         U, V, _ = self.interfunction(rays, pov)
@@ -1109,13 +1115,11 @@ class Triangle(Object):
         return abs(self.u.cross(self.v)) / 2
 
     def gen_incident(self, rays):  # Only called after intersection test already made
-        print(len(rays))
-        if len(rays) == 0:
-            return array([])
-        prod = abs(
-            dot(rays, expand_dims(self.unit_normal, 0).T))  # angle calculation only calculates absolute value of angle
-        incidents = squeeze(arcsin(prod), -1)
-        return incidents
+        # rays is the same as temp_hits, but is set and called externally
+        if len(rays) != 0:
+            prod = abs(dot(rays.T, expand_dims(self.unit_normal, 0).T))
+            incidents = squeeze(arcsin(prod), -1)  # angle calculation only calculates absolute value of angle
+            return incidents
 
     # Normal methods
     def gen_normal(self):
@@ -1148,8 +1152,9 @@ class Tetrahedron(Composite):
         self.v = self.p3-self.p1
         self.w = self.p4-self.p1
         self.anchor = (self.p1 + self.p2 + self.p3 + self.p4)/4
-        self.PARAMS={"anchor": self.anchor, "vec_1": self.u, "vec_2": self.v, "vec_3": self.w}
-        self.COMPONENTS={"T1":Triangle(p1,p2,p3),"T2":Triangle(p1,p3,p4),"T3":Triangle(p1,p2,p4),"T4":Triangle(p2,p3,p4)}
+        self.PARAMS = {"anchor": self.anchor, "vec_1": self.u, "vec_2": self.v, "vec_3": self.w}
+        self.COMPONENTS = {"T1": Triangle(p1, p2, p3), "T2": Triangle(p1, p3, p4),
+                         "T3": Triangle(p1, p2, p4), "T4": Triangle(p2, p3, p4)}
         mins = [min([self.p1[i], self.p2[i], self.p3[i], self.p4[i]]) for i in range(3)]
         maxes = [max([self.p1[i], self.p2[i], self.p3[i], self.p4[i]]) for i in range(3)]
         self.bounding_box=AABB(mins,maxes)
@@ -1473,6 +1478,7 @@ class ObjFile:
 
     def remove_face(self, index):
         self.faces.pop(index)
+        # need to update vertex indices?
 
     # LOOKS UP VERTEX DESCRIPTOR (3D COORDINATE)
     def vertex_index(self, vertex_desc):
@@ -1486,6 +1492,7 @@ class ObjFile:
         self.vertices.pop(index)
         self.faces = [f for f in self.faces if index + 1 not in f]
         self.faces = [[v-1 if v > index else v for v in f] for f in self.faces]
+        self.vertex_count -= 1
 
     # Write OBJ file and add optional comments.
     def write_obj(self, **kwargs):
@@ -1542,6 +1549,13 @@ class ObjFile:
         if not isinstance(rotation, Rotation):
             raise TypeError("Rotation must be an instance or Rotation class.")
         self.vertices = list(rotation.apply(array(self.vertices)))
+        return self
+
+    def filter_by_range(self, max_dist, centre):
+        out_of_range = where(norm(array(self.vertices)-centre, axis=1) > max_dist)
+        for i in out_of_range[0][::-1]: # reverse order to avoid index errors
+            self.remove_vertex(i)
+        return self
 
 # ARRAY EXTRACTION TOOLS
 
@@ -1764,6 +1778,8 @@ class Mesh(Composite):
     def gen_mesh(self):
         self.mesh = Poly3DCollection(array(self.OBJ.vertices)[array(self.OBJ.faces) - 1])
 
+    # Transformations
+
     def apply_rotation(self, rotation, *args):
         super().apply_rotation(rotation)
         if "update" in args:
@@ -1784,6 +1800,17 @@ class Mesh(Composite):
         c_2 = [max_x, max_y, max_z]
         self.bounding_box = AABB(c_1, c_2)
         return self
+
+    def filter_by_range(self, max_dist, centre):
+        self.OBJ.filter_by_range(max_dist, centre)
+        self.mesh = Poly3DCollection(array(self.OBJ.vertices)[array(self.OBJ.faces) - 1])
+        [[min_x, max_x], [min_y, max_y], [min_z, max_z]] = [self.min_max([v[i] for v in self.OBJ.vertices]) for i in range(3)]
+        c_1 = [min_x, min_y, min_z]
+        c_2 = [max_x, max_y, max_z]
+        self.bounding_box = AABB(c_1, c_2)
+        return self
+
+    # Visualization
 
     def show(self, **kwargs):
         if self.mesh is None:
