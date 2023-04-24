@@ -18,7 +18,6 @@ def log_terminal_output(log_dir="."):
     log_dir_path = Path(log_dir)
     log_dir_path.mkdir(parents=True, exist_ok=True)
     log_number = get_latest_log_number(log_dir) + 1
-    print(log_number)
     log_file_path = log_dir_path / f"run_{log_number:03}"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     with open(f"{log_file_path}.out", 'w') as log_file:
@@ -50,6 +49,7 @@ def log_terminal_output(log_dir="."):
         # If the error file is empty, delete it
         if Path(f"{log_file_path}.err").stat().st_size == 0:
             os.remove(f"{log_file_path}.err")
+            print(f"No errors or warnings in run {log_number}")
         # Print the log file path
         print(f"Log file saved to: {log_file_path}")
         # Print the output and error messages to the console
