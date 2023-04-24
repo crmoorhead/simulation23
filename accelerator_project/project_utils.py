@@ -346,7 +346,7 @@ class Scene():
     def __ne__(self, other):
         return not self.__eq__(other)
 
-    def intersection_params(self, rays, pov, **kwargs): # Possibly add accelerator here
+    def intersection_params(self, rays, pov, verbosity=0): # Possibly add accelerator here
         self.rays = rays
         self.pov = pov
         if self.accelerator is not None: # Placeholder for any actions relevant to the Accelerator eg. reordering
@@ -354,17 +354,30 @@ class Scene():
         ob_idxs = full(self.rays.shape[1:], -1)  # Rays all assigned as not hitting any object
         dists = full(self.rays.shape[1:], 128, dtype=float)  # Distances all set to 128 (much higher than range)
         for i in range(self.object_count):
-            print("Calculating intersections for object " + str(i+1) + "/" + str(self.object_count) + " (" + self.labels[i] + ")")
+            if verbosity > 1:
+                start = default_timer()
+                print("Calculating intersections for object " + str(i+1) + "/" + str(self.object_count) + " (" + self.labels[i] + ")")
             dist = self.objects[i].intersection_params(rays, pov)  # Calc distances until intersection for current object
             ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i)  # updates closest distances for each ray and retains object
+            if verbosity > 1:
+                print("Time taken: " + str(default_timer() - start))
+        if verbosity > 1:
+            print("Creating index dictionary for object hits")
+            start = default_timer()
         idx_dict = {}
         for f in range(-1, self.object_count): # -1 is for no objects being hit for that ray
             conditions = where(ob_idxs == f)  # Finds indices where rays hit current object
             idx_dict[f] = conditions
-
+        if verbosity > 1:
+            print("Time taken: " + str(default_timer() - start))
         self.idx_dict = idx_dict
         self.dists = dists
+        if verbosity > 1:
+            print("Processing background")
+            start = default_timer()
         self.process_background()  # Modifies above 3 scene properties and replaces misses with background hits
+        if verbosity > 1:
+            print("Time taken: " + str(default_timer() - start))
 
     def collect_min(self, indices, mins, new_array, index):
         indices = where(new_array < mins, index, indices) # Double calculation here. Optimise?
@@ -374,6 +387,8 @@ class Scene():
     # Changes already generated ray and idx dicts. Note that assumption that background is not in front of any object.
     def process_background(self):
         if self.background is not None:
+            if isinstance(self.background, ObjFile):
+                self.background = Mesh(self.background)
             if not isinstance(self.background, Composite):
                 rays = array([(self.rays[:, self.idx_dict[-1][0][c], self.idx_dict[-1][1][c]]) for c in range(len(self.idx_dict[-1][0]))])
                 if rays.size != 0:
@@ -384,31 +399,29 @@ class Scene():
                     self.dists[self.idx_dict[-1]] = br_dists[self.bg_hits]   # Allocate distance of hits to 2D array of dists
                 else:
                     self.idx_dict[-1] = (array([]), array([]))
+                    self.bg_hits = array([])
             else:
-                # similar to above but indices of components replace object indices
-                pass
+                self.background.intersection_params(self.rays, self.pov)
+                self.idx_dict[-1] = self.background.idx_dict[-1]
+                self.dists[self.idx_dict[-1]] = self.background.dists[self.idx_dict[-1]]
 
     # Map SL results onto shape
     # Maybe input is indices
     def scatter_loss(self, **kwargs):
-        SL = full(self.rays.shape[1:], NaN)  # generate expected shape
-        print("start checking objects\n SCATTER LOSS")
+        SL = full(self.rays.shape[1:], NaN) # Initialise array of NaNs
+        print("start checking objects")
         start = default_timer()
         for o in range(self.object_count):
             if self.idx_dict[o] is not None:
-                print("Calculating incidents for", self.labels[o])
                 incidents = self.objects[o].gen_incident(self.rays[:, self.idx_dict[o][0], self.idx_dict[o][1]])
                 SL[self.idx_dict[o]] = self.objects[o].scatterer.SL(incidents)  # Input should be incident angles.
-            else:
-                print("no")
         print("finished checking objects:", default_timer()-start)
         if self.background is not None:
-            if len(self.idx_dict[-1][0]):
-                print("Calculating incidents for background")
-                print("hits shape", self.idx_dict[-1][0].shape) # Hits not the same shape as bg_incidents
+            background_start = default_timer()
+            if len(self.idx_dict[-1][0]):  # If there are any background hits
                 bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]], filter=self.bg_hits))
-                print("bg_incidents", bg_incidents.shape)
                 SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
+            print("Finished checking background:", default_timer()-background_start)
         return SL
 
     # Methods for altering Scene properties
@@ -717,18 +730,6 @@ class A_scan:
             plt.ylabel("Number of returning rays")
             plt.xlabel("Time in ms")
             plt.show()
-        if "visualise" in args:
-            if "no_gain" in args:
-                print("No autogain applied. Saturation may occur. Rerun without 'no_gain' argument")
-            canvas = ones((self.radial_resolution, self.radial_resolution))
-            canvas = canvas * gathered
-            show_image(array(canvas, dtype=float) / 255)
-            if "save_dir" in kwargs:
-                if "image_name" in kwargs:
-                    im_name = kwargs["image_name"]
-                else:
-                    im_name = "untitled.png"
-                imwrite(join(kwargs["save_dir"], im_name), canvas)
         return gathered
 
     def auto_gain(self, arr, **kwargs):
@@ -835,7 +836,7 @@ class Scan():
             self.current = self.a_scan.direction_angle * 180 / pi
             if "verbosity" in kwargs:
                 if kwargs["verbosity"] > 1:
-                    print("Starting timestep {}".format(self.scan_idx))
+                    print("Starting timestep {}".format(self.scan_idx+1))
                     print("Sweep angle: {}".format(self.current))
                     step_start = default_timer()
             current_step = self.get_line(*args, "no_gain", **kwargs)
@@ -863,8 +864,8 @@ class Scan():
             else:
                 img_name = "scan_image_" + timestamp + ".png"
             imwrite(join(kwargs["save_dir"], img_name), self.image)
-
-
+            print("Image saved to", join(kwargs["save_dir"], img_name))  
+        return self.image
 # Visualises with centre 1m above xy plane. Set plane constant 0 to maintain this distance.
 # Resolution 100 as default. Threshold at 0.1 as default.
 # Degrees as standard.

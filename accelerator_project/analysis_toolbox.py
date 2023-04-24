@@ -2,6 +2,7 @@ from contextlib import contextmanager
 import io, sys, os
 from datetime import datetime
 from pathlib import Path
+from math import log10 as mth_log10
 
 def get_latest_log_number(log_dir):
     # resolve path to correct absolute path
@@ -21,7 +22,9 @@ def log_terminal_output(log_dir="."):
     log_file_path = log_dir_path / f"run_{log_number:03}"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     with open(f"{log_file_path}.out", 'w') as log_file:
-        log_file.write(f"{timestamp}\n\n")
+        initial_message = f"RUN {log_number}: Log file created at {timestamp}\n"
+        log_file.write(initial_message)
+        log_file.write("="*len(initial_message) + "\n")
     org_stdout = sys.stdout
     org_stderr = sys.stderr
     captured_stdout = io.StringIO()

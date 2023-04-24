@@ -355,7 +355,6 @@ class AABB(Envelope):
 # STANDARD SCATTERERS
 
 def lambertian_bistatic(incident, return_angle, mu):
-    print("generating lambertians")
     SL = where(~isnan(incident), mu + 10 * log10(multiply(sin(incident), sin(return_angle))), NaN)
     return SL
 
@@ -621,10 +620,7 @@ class Composite(Object):
             if self.COMPONENTS[c].ison(point):
                 return self.COMPONENTS[c].gen_normal(point)
 
-    # Intersection methods:
-
-    def intersect(self, rays, pov, *args, **kwargs):  # ???
-        pass
+    # Intersection methods
 
     def intersection_params(self, rays, pov, *args, **kwargs):
         self.ray_hit_count = 0
@@ -662,7 +658,6 @@ class Composite(Object):
         # Which rays pertain to which component is stored in self.comp_idxs
         # create empty array to hold incident angles
         incidents = empty(self.ray_hit_count, dtype=float)
-        print(incidents.shape)
         current_idx = 0
         # Incidents are processed linearly through the components, so we need to allocate them to the correct
         # position in the array
@@ -1766,13 +1761,13 @@ class Mesh(Composite):
             [p1, p2, p3] = [array(self.OBJ.vertices[f[i]-1]) for i in range(3)]  # Looks up index for each vertex in face edge. Note faces index vertices from 1 in standard OBJ format.
             self.COMPONENTS["Face_" + str(self.component_count)] = Triangle(p1, p2, p3)
         self.anchor = array(self.OBJ.vertices[0])
-        self.PARAMS["location"] = self.anchor
+        self.PARAMS = {"location": self.anchor}
         [[min_x, max_x], [min_y, max_y], [min_z, max_z]] = [self.min_max([v[i] for v in self.OBJ.vertices]) for i in range(3)]
         c_1 = [min_x, min_y, min_z]
         c_2 = [max_x, max_y, max_z]
         self.bounding_box = AABB(c_1, c_2)
 
-    def min_max(lst):
+    def min_max(self, lst):
         return [min(lst), max(lst)]
 
     def gen_mesh(self):
