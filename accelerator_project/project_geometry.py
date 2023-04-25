@@ -454,19 +454,12 @@ class Object:
     def intersect(self, rays, pov):
         dif = self.anchor - pov
         return isclose(dif.dot(rays) * dif.dot(rays), dif.dot(dif) * rays.dot(rays))
-
-    # Finish below
-    def intersect_param(self, rays, pov, **kwargs):
-        if "min_param" in kwargs:
-            min_param = kwargs["min_param"]
-        else:
-            min_param = 0
-
+    def intersection_param(self, rays, pov, **kwargs):
         if self.intersect(rays, pov):
             print("Placeholder function only applied. This object has no explicit intersection parameters method.")
 
     def intersection_point(self, rays, pov, **kwargs):
-        intersections = self.intersect_param(rays, pov, **kwargs)
+        intersections = self.intersection_param(rays, pov, **kwargs)
         if intersections is None:
             return None
         else:
@@ -621,7 +614,7 @@ class Composite(Object):
                 return self.COMPONENTS[c].gen_normal(point)
 
     # Intersection methods
-
+    # A mask kwarg can be passed to the intersection method to specify which rays to consider
     def intersection_params(self, rays, pov, *args, **kwargs):
         self.ray_hit_count = 0
         self.hit_components=set({})
@@ -633,7 +626,7 @@ class Composite(Object):
             self.labels = list(self.COMPONENTS.keys())
             objects = list(self.COMPONENTS.values())
             for i in range(self.component_count):
-                dist = objects[i].intersection_params(rays, pov)  # Calc distances until intersection for current object
+                dist = objects[i].intersection_params(rays, pov, **kwargs)  # Calc distances until intersection for current object
                 ob_idxs, dists = self.collect_min(ob_idxs, dists, dist, i+1)  # updates closest distances for each ray and
                 # retains object. Idx counts from 1, not 0.
             comp_idxs = {} # Dictionary of indices of rays hitting each component
@@ -652,7 +645,6 @@ class Composite(Object):
         mins = where(new_array < mins, new_array, mins)
         return indices, mins
 
-    # composite objects need to reference object too. Save during intersect_params stage
     def gen_incident(self, rays):
         # Rays being passed are no longer the full set of rays, but only those that have hit the object in a 2D array
         # Which rays pertain to which component is stored in self.comp_idxs
@@ -662,7 +654,6 @@ class Composite(Object):
         # Incidents are processed linearly through the components, so we need to allocate them to the correct
         # position in the array
         for c in self.hit_components:   # For each component that has been hit
-            print(c, "hit_num" , len(self.COMPONENTS[c].temp_hits[0]))
             incidents[current_idx:current_idx + len(self.COMPONENTS[c].temp_hits[0])] = \
                 self.COMPONENTS[c].gen_incident(self.COMPONENTS[c].temp_hits)  # Need to allocate incidents to correct position in array
             current_idx += len(self.COMPONENTS[c].temp_hits)  # Increment current_idx by number of hits in component
@@ -761,8 +752,11 @@ class Plane(Object):
     def perpendicularity(self, rays):  # ray_direction * plane_normal (if 0, then the ray is in the plane)
         return dot(rays, expand_dims(self.unit_normal, 0).T)
 
-    def intersection_params(self, rays, pov):
-        self.temp_ray_prod = self.perpendicularity(rays) # Store data for later use
+    def intersection_params(self, rays, pov, **kwargs):
+        if "mask" in kwargs:
+            pass
+        else:
+            self.temp_ray_prod = self.perpendicularity(rays) # Store data for later use
         intersection_constant = dot(array([0, 0, -self.constant]) - pov, self.unit_normal)
         ts = divide(intersection_constant, self.temp_ray_prod)
         ts[ts < 0] = NaN
@@ -1058,7 +1052,7 @@ class Triangle(Object):
     # array of rays. If no intersection, NaN is returned in that position.
 
     def interfunction(self, rays, pov):
-        rshape = rays.shape[1:] # Shape of the 2D array of rays
+        rshape = rays.shape[1:] # Shape of the 3D array of rays
         rays = rays.reshape((3, rays.shape[1] * rays.shape[2])).T # Reshapes into a 2D array of vectors.
         epsilon = 1e-6
         T = pov - self.p1 # Vector from p1 to pov (tvec)
@@ -1087,14 +1081,14 @@ class Triangle(Object):
         else:
             return full(rays.shape[0], False)
 
-    def intersection_params(self, rays, pov):
+    def intersection_params(self, rays, pov, **kwargs):
         _, _, t = self.interfunction(rays, pov) # Returns the distance to the intersection point.
         if t is not None:
             return t
         else:
             return full(rays.shape[1:], NaN) # Returns an array of NaNs if no intersection.
 
-    def intersection_points(self, rays, pov):
+    def intersection_points(self, rays, pov, **kwargs):
         U, V, _ = self.interfunction(rays, pov)
         if U is not None:
             U = U.reshape((U.shape[0], 1))

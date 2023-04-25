@@ -20,19 +20,25 @@ corner_tri = Triangle([0, 1 ,0], [0, 1, 1], [1, 1, 0])
 # X can take on values 8, 32, 128, 512
 
 # Create a scene with the object and background
-scene_1 = Scene(background=FLAT_PLANE, objects=test_tet)
+scene_1 = Scene(background=GAUSSIAN_HILL_32, objects=test_tet)
 
-# Run the simulation and save the image. Use your own paths.
-log_dir = r"C:\Users\r03cm18\OneDrive\2023\Uni_2023\Journal\04-28-2023\run_logs"
-image_dir = r"C:\Users\r03cm18\OneDrive\2023\Uni_2023\Simulation\Images"
+# Run the simulation and save the image. Use your own paths. The set_computer function
+# accesses my one drive folder. Delete the function and use your own paths.
+
+log_dir = set_computer(subdir=r"Uni_2023\Journal\04-28-2023\run_logs")
+image_dir = set_computer(subdir=r"Uni_2023\Simulation\Images")
+
 
 # Remove loop for a single run or set to 1.
 for i in range(1):
     with log_terminal_output(log_dir) as log_file:
         print("Scene:", scene_1)
         print("Objects:", scene_1.objects)
-        print("Device:", device)
+        print("Background:", scene_1.background)
         print("Medium:", medium)
+        print("Device:", device)
+        # Create a scan object and run the simulation
         scan = Scan(A_scan(device, [0, 0, 0], -60, 0, 100, 0.1, "degs", scene=scene_1)
                     ,"scan", "degs", span=120)
         scan.full_scan(verbosity=2, save_dir=image_dir)
+

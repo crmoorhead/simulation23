@@ -279,25 +279,30 @@ SALT_WATER_1200 = Medium(SALT_DICT, freq=1200)
 
 class Scene():
 
-    def __init__(self, **kwargs):
+    def __init__(self, objects=[], background=None, **kwargs):
 
-        if "background" in kwargs:
-            self.background = kwargs["background"]
+        # Set background if given and convert to Mesh object if necessary
+        if background is not None:
+            self.background = Mesh(background) if isinstance(background, ObjFile) else background
+
+        # Convert objects to list of objects and labels
+        if isinstance(objects, dict):
+            self.labels = list(objects.keys())
+            self.objects = list(objects.values())
+        elif isinstance(objects, list):
+            self.labels = ["object_"+str(i+1) for i in range(len(objects))]
+            self.objects = objects
         else:
-            self.background = None
+            self.labels = ["object_1"]
+            self.objects = [objects]
         if "objects" in kwargs:
-            if isinstance(kwargs["objects"], dict):
-                self.labels = list(kwargs["objects"].keys())
-                self.objects = list(kwargs["objects"].values())
-            elif isinstance(kwargs["objects"], list):
-                self.labels = ["object_"+str(i+1) for i in range(len(kwargs["objects"]))]
-                self.objects = kwargs["objects"]
-            else:
-                self.labels = ["object_1"]
-                self.objects = [kwargs["objects"]]
+            self.labels = list(kwargs["objects"].keys())
+            self.objects = list(kwargs["objects"].values())
         else:
             self.labels = []
             self.objects = []
+        # Convert ObjFile objects to Mesh objects
+        self.objects = [Mesh(obj) if isinstance(ObjFile) else obj for obj in self.objects]
 
         if "accelerator" in kwargs:
             self.accelerator = kwargs["accelerator"]
@@ -317,7 +322,7 @@ class Scene():
             raise AttributeError("This is an empty scene. All images will be empty")
 
     def __str__(self):
-        return "Scene(" + self.name +  ", " + str(self.object_count) + " objects in scene, background:{})".format(self.background.__str__())
+        return "Scene(" + self.name + ", " + str(self.object_count) + " objects in scene, background:{})".format(self.background.__str__())
 
     def __repr__(self):
         desc = ""
@@ -346,7 +351,8 @@ class Scene():
     def __ne__(self, other):
         return not self.__eq__(other)
 
-    def intersection_params(self, rays, pov, verbosity=0): # Possibly add accelerator here
+    def intersection_params(self, rays, pov): # Possibly add accelerator here
+        verbosity = 0
         self.rays = rays
         self.pov = pov
         if self.accelerator is not None: # Placeholder for any actions relevant to the Accelerator eg. reordering
@@ -370,8 +376,8 @@ class Scene():
             idx_dict[f] = conditions
         if verbosity > 1:
             print("Time taken: " + str(default_timer() - start))
-        self.idx_dict = idx_dict
-        self.dists = dists
+        self.idx_dict = idx_dict # Stores index dictionary giving 2D array of indices for each object
+        self.dists = dists # Stores distances for each ray. 128 if no intersection
         if verbosity > 1:
             print("Processing background")
             start = default_timer()
@@ -387,23 +393,24 @@ class Scene():
     # Changes already generated ray and idx dicts. Note that assumption that background is not in front of any object.
     def process_background(self):
         if self.background is not None:
-            if isinstance(self.background, ObjFile):
-                self.background = Mesh(self.background)
             if not isinstance(self.background, Composite):
                 rays = array([(self.rays[:, self.idx_dict[-1][0][c], self.idx_dict[-1][1][c]]) for c in range(len(self.idx_dict[-1][0]))])
                 if rays.size != 0:
                     br_dists = squeeze(self.background.intersection_params(rays, self.pov))   # gets distances of rays that hit the B/G
                     self.bg_hits = squeeze(asarray(where(~isnan(br_dists))))   # sort between those that actually hit the B/G
-                    # NONE HIT??
                     self.idx_dict[-1] = tuple(array(self.idx_dict[-1]).T[self.bg_hits].T) # Produces correct format of tuple for indexing
                     self.dists[self.idx_dict[-1]] = br_dists[self.bg_hits]   # Allocate distance of hits to 2D array of dists
                 else:
                     self.idx_dict[-1] = (array([]), array([]))
-                    self.bg_hits = array([])
             else:
-                self.background.intersection_params(self.rays, self.pov)
-                self.idx_dict[-1] = self.background.idx_dict[-1]
-                self.dists[self.idx_dict[-1]] = self.background.dists[self.idx_dict[-1]]
+                mask = full(self.rays.shape[1:], False)
+                mask[self.idx_dict[-1]] = True # Mask of rays that have not hit any object
+                bg_dists = self.background.intersection_params(self.rays, self.pov)
+                bg_dists[bg_dists == 128] = NaN # Set all rays that have not hit the background to NaN
+                bg_dists[~mask] = NaN # Set all rays that have hit an object to NaN
+                self.dists[mask] = bg_dists[mask] # Update distances
+                self.idx_dict[-1] = where(~isnan(bg_dists)) # Update index dictionary
+
 
     # Map SL results onto shape
     # Maybe input is indices
@@ -419,7 +426,8 @@ class Scene():
         if self.background is not None:
             background_start = default_timer()
             if len(self.idx_dict[-1][0]):  # If there are any background hits
-                bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]], filter=self.bg_hits))
+                # rays which hit background fed into background scatterer
+                bg_incidents = squeeze(self.background.gen_incident(self.rays[:, self.idx_dict[-1][0], self.idx_dict[-1][1]]))
                 SL[self.idx_dict[-1]] = self.background.scatterer.SL(bg_incidents)  # Input should be incident angles
             print("Finished checking background:", default_timer()-background_start)
         return SL
@@ -684,7 +692,7 @@ class A_scan:
             visualise_2d_array(TL, *args, **kwargs)
         return TL
 
-    def total_strength_field(self, *args, **kwargs):
+    def total_strength_field(self, *args):
         dists = self.intersection_params()
         TL = -self.medium.TL(dists)
         DL = self.directivity
@@ -711,7 +719,7 @@ class A_scan:
 
     def scan_line(self, *args, **kwargs):
         start = default_timer()
-        dist_array, strength_array = self.total_strength_field(*args, **kwargs)
+        dist_array, strength_array = self.total_strength_field(*args)
         if "verbosity" in kwargs:
             if kwargs["verbosity"] > 2:
                 print("strength_field time", default_timer() - start)
